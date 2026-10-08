@@ -24,6 +24,10 @@ def get_player(id: int, db: Session = Depends(get_db)):
 
 @router.post("", status_code=201, response_model=schemas.PlayerResponse)
 def create_player(player_data: schemas.PlayerCreate, db: Session = Depends(get_db)):
+    existing = db.query(models.Player).filter(models.Player.username == player_data.username).first()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Username bestaat al.")
+
     new_player = models.Player(username=player_data.username, score=0)
     db.add(new_player)
     db.commit()
@@ -39,6 +43,12 @@ def update_player(id: int, player_data: schemas.PlayerUpdate, db: Session = Depe
         raise HTTPException(status_code=404, detail="Speler niet gevonden.")
 
     if player_data.username is not None:
+        taken = db.query(models.Player).filter(
+            models.Player.username == player_data.username,
+            models.Player.id != id,
+        ).first()
+        if taken is not None:
+            raise HTTPException(status_code=409, detail="Username bestaat al.")
         player.username = player_data.username
 
     if player_data.score is not None:
