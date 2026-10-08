@@ -1,6 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, Field
-from player import Player
+from sqlalchemy.orm import Session
+
+from database import Base, engine, get_db
+import models
+
+# Maakt de tabellen aan in players.db als ze nog niet bestaan
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
@@ -16,13 +22,6 @@ class PlayerUpdate(BaseModel):
     username: str | None = Field(default=None, min_length=1, max_length=50)
     score: int | None = Field(default=None, ge=0)
 
-# Voorlopig wat testdata, zodat er iets is om op te testen
-players = [
-    Player(1, "anna", 50),
-    Player(2, "bram", 80),
-    Player(3, "chris", 20),
-]
-
 
 @app.get("/")
 def root():
@@ -31,8 +30,9 @@ def root():
 
 
 @app.get("/players")
-def get_players():
+def get_players(db: Session = Depends(get_db)):
     """Geeft alle spelers terug als JSON."""
+    players = db.query(models.Player).all()
     return [
         {"id": p.id, "username": p.username, "score": p.score}
         for p in players
@@ -40,54 +40,65 @@ def get_players():
 
 
 @app.get("/players/{id}")
-def get_player(id: int):
+def get_player(id: int, db: Session = Depends(get_db)):
     """Geeft één specifieke speler terug op basis van id."""
-    for p in players:
-        if p.id == id:
-            return {"id": p.id, "username": p.username, "score": p.score}
+    player = db.query(models.Player).filter(models.Player.id == id).first()
 
-    raise HTTPException(status_code=404, detail="Speler niet gevonden.")
+    if player is None:
+        raise HTTPException(status_code=404, detail="Speler niet gevonden.")
+
+    return {"id": player.id, "username": player.username, "score": player.score}
 
 
 @app.get("/leaderboard")
-def get_leaderboard():
+def get_leaderboard(db: Session = Depends(get_db)):
     """Geeft alle spelers terug, gesorteerd op score (hoogste eerst)."""
-    sorted_players = sorted(players, key=lambda p: p.score, reverse=True)
+    players = db.query(models.Player).order_by(models.Player.score.desc()).all()
     return [
         {"id": p.id, "username": p.username, "score": p.score}
-        for p in sorted_players
+        for p in players
     ]
 
 
 @app.post("/players", status_code=201)
-def create_player(player_data: PlayerCreate):
+def create_player(player_data: PlayerCreate, db: Session = Depends(get_db)):
     """Maakt een nieuwe speler aan op basis van de meegestuurde username."""
-    new_id = len(players) + 1
-    new_player = Player(new_id, player_data.username)
-    players.append(new_player)
+    new_player = models.Player(username=player_data.username, score=0)
+    db.add(new_player)
+    db.commit()
+    db.refresh(new_player)  # haalt het door de database toegekende id op
     return {"id": new_player.id, "username": new_player.username, "score": new_player.score}
 
 
 @app.patch("/players/{id}")
-def update_player(id: int, player_data: PlayerUpdate):
+def update_player(id: int, player_data: PlayerUpdate, db: Session = Depends(get_db)):
     """Wijzigt username en/of score van een bestaande speler."""
-    for p in players:
-        if p.id == id:
-            if player_data.username is not None:
-                p.username = player_data.username
-            if player_data.score is not None:
-                p.score = player_data.score
-            return {"id": p.id, "username": p.username, "score": p.score}
+    player = db.query(models.Player).filter(models.Player.id == id).first()
 
-    raise HTTPException(status_code=404, detail="Speler niet gevonden.")
+    if player is None:
+        raise HTTPException(status_code=404, detail="Speler niet gevonden.")
+
+    if player_data.username is not None:
+        player.username = player_data.username
+
+    if player_data.score is not None:
+        player.score = player_data.score
+        # bewaar deze wijziging ook als losse Score-entry (geschiedenis)
+        db.add(models.Score(value=player_data.score, player_id=player.id))
+
+    db.commit()
+    db.refresh(player)
+    return {"id": player.id, "username": player.username, "score": player.score}
 
 
 @app.delete("/players/{id}", status_code=204)
-def delete_player(id: int):
+def delete_player(id: int, db: Session = Depends(get_db)):
     """Verwijdert een speler op basis van id."""
-    for p in players:
-        if p.id == id:
-            players.remove(p)
-            return
+    player = db.query(models.Player).filter(models.Player.id == id).first()
 
-    raise HTTPException(status_code=404, detail="Speler niet gevonden.")
+    if player is None:
+        raise HTTPException(status_code=404, detail="Speler niet gevonden.")
+
+    db.delete(player)
+    db.commit()
+    return
