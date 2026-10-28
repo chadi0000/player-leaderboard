@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app import models, schemas
 from app.database import get_db
+from app.security import get_current_user
 
 router = APIRouter(prefix="/players", tags=["players"])
 
@@ -23,12 +24,20 @@ def get_player(id: int, db: Session = Depends(get_db)):
 
 
 @router.post("", status_code=201, response_model=schemas.PlayerResponse)
-def create_player(player_data: schemas.PlayerCreate, db: Session = Depends(get_db)):
+def create_player(
+    player_data: schemas.PlayerCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
     existing = db.query(models.Player).filter(models.Player.username == player_data.username).first()
     if existing is not None:
         raise HTTPException(status_code=409, detail="Username bestaat al.")
 
-    new_player = models.Player(username=player_data.username, score=0)
+    new_player = models.Player(
+        username=player_data.username,
+        score=0,
+        owner_id=current_user.id,
+    )
     db.add(new_player)
     db.commit()
     db.refresh(new_player)
@@ -36,11 +45,19 @@ def create_player(player_data: schemas.PlayerCreate, db: Session = Depends(get_d
 
 
 @router.patch("/{id}", response_model=schemas.PlayerResponse)
-def update_player(id: int, player_data: schemas.PlayerUpdate, db: Session = Depends(get_db)):
+def update_player(
+    id: int,
+    player_data: schemas.PlayerUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
     player = db.query(models.Player).filter(models.Player.id == id).first()
 
     if player is None:
         raise HTTPException(status_code=404, detail="Speler niet gevonden.")
+
+    if player.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Je mag alleen je eigen spelers wijzigen.")
 
     if player_data.username is not None:
         taken = db.query(models.Player).filter(
@@ -62,11 +79,18 @@ def update_player(id: int, player_data: schemas.PlayerUpdate, db: Session = Depe
 
 
 @router.delete("/{id}", status_code=204)
-def delete_player(id: int, db: Session = Depends(get_db)):
+def delete_player(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
     player = db.query(models.Player).filter(models.Player.id == id).first()
 
     if player is None:
         raise HTTPException(status_code=404, detail="Speler niet gevonden.")
+
+    if player.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Je mag alleen je eigen spelers verwijderen.")
 
     db.delete(player)
     db.commit()
